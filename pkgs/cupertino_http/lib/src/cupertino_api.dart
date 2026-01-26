@@ -27,6 +27,7 @@
 library;
 
 import 'dart:async';
+import 'dart:ffi' as ffi;
 
 import 'package:objective_c/objective_c.dart' as objc;
 
@@ -606,6 +607,33 @@ class URLSessionWebSocketTask extends URLSessionTask {
     : _urlSessionWebSocketTask = c,
       super._();
 
+  /// Wraps an existing native [ncb.NSURLSessionWebSocketTask].
+  ///
+  /// This is useful when the WebSocket task was created by native code
+  /// (e.g., when using an externally-managed [URLSession]).
+  ///
+  /// The [pointer] should be obtained from native code. If [retain] is `true`
+  /// (the default), the task will be retained to prevent deallocation.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Get a WebSocket task pointer from native code
+  /// final taskPointer = await nativeManager.createWebSocketTask(url);
+  /// final task = URLSessionWebSocketTask.fromRawPointer(taskPointer);
+  /// final webSocket = CupertinoWebSocket.fromConnectedTask(task);
+  /// ```
+  factory URLSessionWebSocketTask.fromRawPointer(
+    ffi.Pointer<objc.ObjCObjectImpl> pointer, {
+    bool retain = true,
+  }) {
+    final nsTask = ncb.NSURLSessionWebSocketTask.fromPointer(
+      pointer,
+      retain: retain,
+      release: true,
+    );
+    return URLSessionWebSocketTask._(nsTask);
+  }
+
   /// The close code set when the WebSocket connection is closed.
   ///
   /// See [NSURLSessionWebSocketTask.closeCode](https://developer.apple.com/documentation/foundation/nsurlsessionwebsockettask/3181201-closecode)
@@ -823,6 +851,14 @@ class URLSession extends _ObjectHolder<ncb.NSURLSession> {
   // [URLSessionConfiguration._isBackground] associated with this [URLSession].
   final bool _isBackground;
 
+  /// Whether this wrapper owns the underlying native session.
+  ///
+  /// If `true`, [finishTasksAndInvalidate] will invalidate the native session.
+  ///
+  /// If `false`, the native session is managed externally and will not be
+  /// invalidated when this wrapper is closed.
+  final bool _ownsSession;
+
   static ncb.NSURLSessionDelegate delegate(
     bool isBackground, {
     URLRequest? Function(
@@ -975,8 +1011,46 @@ class URLSession extends _ObjectHolder<ncb.NSURLSession> {
     return ncb.NSURLSessionDelegate.as(protoBuilder.build());
   }
 
-  URLSession._(super.c, {required bool isBackground})
-    : _isBackground = isBackground;
+  URLSession._(super.c, {required bool isBackground, bool ownsSession = true})
+    : _isBackground = isBackground,
+      _ownsSession = ownsSession;
+
+  /// Wraps an existing native [ncb.NSURLSession].
+  ///
+  /// The session's lifecycle is managed externally - calling
+  /// [finishTasksAndInvalidate] will NOT invalidate the session.
+  ///
+  /// This is useful for sharing a pre-configured session across isolates,
+  /// where native code manages the session lifecycle and SSL/auth delegates.
+  ///
+  /// The [pointer] should be obtained from native code that manages the
+  /// shared session. If [retainSession] is `true` (the default), the session
+  /// will be retained, preventing it from being deallocated while this
+  /// wrapper exists.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Get a shared session pointer from your native code via FFI
+  /// final sessionPointer = MyNativeManager.getSharedSessionPointer();
+  /// final session = URLSession.fromRawPointer(sessionPointer);
+  ///
+  /// // Use the session for requests
+  /// final task = session.dataTaskWithRequest(request);
+  ///
+  /// // Closing this wrapper does NOT affect the shared native session
+  /// session.finishTasksAndInvalidate();
+  /// ```
+  factory URLSession.fromRawPointer(
+    ffi.Pointer<objc.ObjCObjectImpl> pointer, {
+    bool retainSession = true,
+  }) {
+    final nsSession = ncb.NSURLSession.fromPointer(
+      pointer,
+      retain: retainSession,
+      release: true,
+    );
+    return URLSession._(nsSession, isBackground: false, ownsSession: false);
+  }
 
   /// A client with reasonable default behavior.
   ///
@@ -1223,8 +1297,13 @@ class URLSession extends _ObjectHolder<ncb.NSURLSession> {
   /// Free resources related to this session after the last task completes.
   /// Returns immediately.
   ///
+  /// If this session was created with [URLSession.fromRawPointer], this method
+  /// does nothing because the session lifecycle is managed externally.
+  ///
   /// See [NSURLSession finishTasksAndInvalidate](https://developer.apple.com/documentation/foundation/nsurlsession/1407428-finishtasksandinvalidate)
   void finishTasksAndInvalidate() {
-    _nsObject.finishTasksAndInvalidate();
+    if (_ownsSession) {
+      _nsObject.finishTasksAndInvalidate();
+    }
   }
 }

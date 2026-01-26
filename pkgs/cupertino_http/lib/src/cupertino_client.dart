@@ -103,7 +103,39 @@ class CupertinoClient extends BaseClient {
 
   URLSession? _urlSession;
 
-  CupertinoClient._(this._urlSession);
+  /// Whether this client owns the underlying session.
+  ///
+  /// If `true`, [close] will invalidate the session.
+  /// If `false`, the session is managed externally and [close] only marks
+  /// this client as closed.
+  final bool _ownsSession;
+
+  CupertinoClient._(this._urlSession) : _ownsSession = true;
+
+  /// Creates a client from an externally-managed [URLSession].
+  ///
+  /// The session's lifecycle is managed externally - calling [close] will
+  /// NOT invalidate the underlying session.
+  ///
+  /// This is useful for sharing a pre-configured session across isolates,
+  /// where native code manages the session lifecycle and SSL/auth delegates.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Get a shared session from native code
+  /// final sessionPointer = MyNativeManager.getSharedSessionPointer();
+  /// final session = URLSession.fromRawPointer(sessionPointer);
+  /// final client = CupertinoClient.fromSharedSession(session);
+  ///
+  /// // Use the client
+  /// final response = await client.get(Uri.parse('https://example.com'));
+  ///
+  /// // Closing the client does NOT affect the shared session
+  /// client.close();
+  /// ```
+  CupertinoClient.fromSharedSession(URLSession session)
+    : _urlSession = session,
+      _ownsSession = false;
 
   String? _findReasonPhrase(int statusCode) {
     switch (statusCode) {
@@ -319,7 +351,9 @@ class CupertinoClient extends BaseClient {
 
   @override
   void close() {
-    _urlSession?.finishTasksAndInvalidate();
+    if (_ownsSession) {
+      _urlSession?.finishTasksAndInvalidate();
+    }
     _urlSession = null;
   }
 
@@ -418,6 +452,13 @@ class CupertinoClient extends BaseClient {
 
     // This will preserve Apple default headers - is that what we want?
     request.headers.forEach(urlRequest.setValueForHttpHeaderField);
+
+    // For shared sessions (created externally), use completion handler since
+    // delegate callbacks are not connected to this client.
+    if (!_ownsSession) {
+      return _sendWithCompletion(urlSession, urlRequest, request, profile);
+    }
+
     final task = urlSession.dataTaskWithRequest(urlRequest);
     if (request case Abortable(:final abortTrigger?)) {
       unawaited(
@@ -501,6 +542,74 @@ class CupertinoClient extends BaseClient {
       isRedirect: isRedirect,
       headers: responseHeaders,
     );
+  }
+
+  @pragma('vm:prefer-inline')
+  Future<StreamedResponse> _sendWithCompletion(
+    URLSession urlSession,
+    URLRequest urlRequest,
+    BaseRequest request,
+    HttpClientRequestProfile? profile,
+  ) {
+    final completer = Completer<StreamedResponse>();
+    final startTime = DateTime.now();
+    final task = urlSession.dataTaskWithCompletionHandler(urlRequest, (
+      data,
+      response,
+      error,
+    ) {
+      if (error != null) {
+        final exception = error.code == _nsurlErrorCancelled ?
+          RequestAbortedException(request.url) :
+          NSErrorClientException(error, request.url);
+        profile?.responseData.closeWithError(exception.toString());
+        completer.completeError(exception);
+        return;
+      }
+
+      final httpResponse = response! as HTTPURLResponse;
+      final headers = <String, String>{};
+      for (final e in httpResponse.allHeaderFields.entries) {
+        headers[e.key.toLowerCase()] = e.value;
+      }
+
+      final contentLength = httpResponse.expectedContentLength == -1
+          ? null
+          : httpResponse.expectedContentLength;
+
+      if (profile != null) {
+        profile.requestData.close();
+        profile.responseData
+          ..contentLength = contentLength
+          ..headersCommaValues = headers
+          ..isRedirect = false
+          ..reasonPhrase = _findReasonPhrase(httpResponse.statusCode)
+          ..startTime = startTime
+          ..statusCode = httpResponse.statusCode;
+        if (data != null) {
+          profile.responseData.bodySink.add(data.toList());
+        }
+        profile.responseData.close();
+      }
+
+      completer.complete(
+        _StreamedResponseWithUrl(
+          data == null ? Stream.empty() : Stream.value(data.toList()),
+          httpResponse.statusCode,
+          url: request.url,
+          headers: headers,
+          contentLength: contentLength,
+          reasonPhrase: _findReasonPhrase(httpResponse.statusCode),
+          request: request,
+          isRedirect: false,
+        ),
+      );
+    });
+    if (request case Abortable(:final abortTrigger?)) {
+      unawaited(abortTrigger.whenComplete(task.cancel));
+    }
+    task.resume();
+    return completer.future;
   }
 }
 
