@@ -453,10 +453,10 @@ class CupertinoClient extends BaseClient {
     // This will preserve Apple default headers - is that what we want?
     request.headers.forEach(urlRequest.setValueForHttpHeaderField);
 
-    // For shared sessions (created externally), use completion handler since
+    // For shared sessions (created externally), use streaming helper since
     // delegate callbacks are not connected to this client.
     if (!_ownsSession) {
-      return _sendWithCompletion(urlSession, urlRequest, request, profile);
+      return _sendWithStreaming(urlSession, urlRequest, request, profile);
     }
 
     final task = urlSession.dataTaskWithRequest(urlRequest);
@@ -508,17 +508,7 @@ class CupertinoClient extends BaseClient {
       throw ClientException('Redirect limit exceeded', request.url);
     }
 
-    final responseHeaders = response.allHeaderFields.map(
-      (key, value) => MapEntry(key.toLowerCase(), value),
-    );
-
-    if (responseHeaders['content-length'] case final contentLengthHeader?
-        when !_digitRegex.hasMatch(contentLengthHeader)) {
-      throw ClientException(
-        'Invalid content-length header [$contentLengthHeader].',
-        request.url,
-      );
-    }
+    final responseHeaders = _getResponseHeaders(response, request);
 
     final contentLength = response.expectedContentLength == -1
         ? null
@@ -544,72 +534,104 @@ class CupertinoClient extends BaseClient {
     );
   }
 
-  @pragma('vm:prefer-inline')
-  Future<StreamedResponse> _sendWithCompletion(
-    URLSession urlSession,
+  /// Sends request using the streaming helper for external sessions.
+  ///
+  /// This provides true streaming on iOS 15+/macOS 12+ using the `bytes(for:)`
+  /// API, with fallback chunking on older versions.
+  Future<StreamedResponse> _sendWithStreaming(
+    URLSession session,
     URLRequest urlRequest,
     BaseRequest request,
     HttpClientRequestProfile? profile,
-  ) {
-    final completer = Completer<StreamedResponse>();
-    final startTime = DateTime.now();
-    final task = urlSession.dataTaskWithCompletionHandler(urlRequest, (
-      data,
-      response,
-      error,
-    ) {
-      if (error != null) {
-        final exception = error.code == _nsurlErrorCancelled ?
-          RequestAbortedException(request.url) :
-          NSErrorClientException(error, request.url);
-        profile?.responseData.closeWithError(exception.toString());
-        completer.completeError(exception);
-        return;
-      }
+  ) async {
+    final task = StreamingTask(session: session, request: urlRequest)..start();
 
-      final httpResponse = response! as HTTPURLResponse;
-      final headers = <String, String>{};
-      for (final e in httpResponse.allHeaderFields.entries) {
-        headers[e.key.toLowerCase()] = e.value;
-      }
-
-      final contentLength = httpResponse.expectedContentLength == -1
-          ? null
-          : httpResponse.expectedContentLength;
-
-      if (profile != null) {
-        profile.requestData.close();
-        profile.responseData
-          ..contentLength = contentLength
-          ..headersCommaValues = headers
-          ..isRedirect = false
-          ..reasonPhrase = _findReasonPhrase(httpResponse.statusCode)
-          ..startTime = startTime
-          ..statusCode = httpResponse.statusCode;
-        if (data != null) {
-          profile.responseData.bodySink.add(data.toList());
-        }
-        profile.responseData.close();
-      }
-
-      completer.complete(
-        _StreamedResponseWithUrl(
-          data == null ? Stream.empty() : Stream.value(data.toList()),
-          httpResponse.statusCode,
-          url: request.url,
-          headers: headers,
-          contentLength: contentLength,
-          reasonPhrase: _findReasonPhrase(httpResponse.statusCode),
-          request: request,
-          isRedirect: false,
-        ),
-      );
-    });
     if (request case Abortable(:final abortTrigger?)) {
       unawaited(abortTrigger.whenComplete(task.cancel));
     }
-    task.resume();
-    return completer.future;
+
+    final URLResponse urlResponse;
+    try {
+      urlResponse = await task.response;
+    } catch (e) {
+      if (e is NSError) {
+        final exception = e.code == _nsurlErrorCancelled
+            ? RequestAbortedException(request.url)
+            : NSErrorClientException(e, request.url);
+        unawaited(profile?.responseData.closeWithError(exception.toString()));
+        throw exception;
+      }
+      rethrow;
+    }
+
+    final response = urlResponse as HTTPURLResponse;
+    final responseHeaders = _getResponseHeaders(response, request);
+
+    final contentLength = response.expectedContentLength == -1
+        ? null
+        : response.expectedContentLength;
+
+    if (profile != null) {
+      unawaited(profile.requestData.close());
+      profile.responseData
+        ..contentLength = contentLength
+        ..headersCommaValues = responseHeaders
+        ..isRedirect = false
+        ..reasonPhrase = _findReasonPhrase(response.statusCode)
+        ..startTime = DateTime.now()
+        ..statusCode = response.statusCode;
+    }
+
+    final controller = StreamController<Uint8List>(onCancel: task.cancel);
+
+    // Forward data chunks
+    task.data.listen(
+      (nsData) {
+        final bytes = nsData.toList();
+        controller.add(bytes);
+        profile?.responseData.bodySink.add(bytes);
+      },
+      onError: (Object e) {
+        if (e is NSError && e.code == _nsurlErrorCancelled) {
+          return;
+        }
+        controller.addError(e);
+        profile?.responseData.closeWithError(e.toString());
+      },
+      onDone: () {
+        controller.close();
+        profile?.responseData.close();
+      },
+    );
+
+    return _StreamedResponseWithUrl(
+      controller.stream,
+      response.statusCode,
+      url: request.url,
+      contentLength: contentLength,
+      reasonPhrase: _findReasonPhrase(response.statusCode),
+      request: request,
+      isRedirect: false,
+      headers: responseHeaders,
+    );
+  }
+
+  Map<String, String> _getResponseHeaders(
+    HTTPURLResponse response,
+    BaseRequest request,
+  ) {
+    final headers = <String, String>{};
+    for (final entry in response.allHeaderFields.entries) {
+      headers[entry.key.toLowerCase()] = entry.value;
+    }
+    final contentLength = headers['content-length'];
+    if (contentLength != null && !_digitRegex.hasMatch(contentLength)) {
+      throw ClientException(
+        'Invalid content-length header [$contentLength].',
+        request.url,
+      );
+    }
+    return headers;
   }
 }
 

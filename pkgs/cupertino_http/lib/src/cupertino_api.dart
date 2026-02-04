@@ -1307,3 +1307,109 @@ class URLSession extends _ObjectHolder<ncb.NSURLSession> {
     }
   }
 }
+
+/// A streaming HTTP task for externally-managed sessions.
+///
+/// Provides chunk-based response delivery that works with sessions created
+/// via [URLSession.fromRawPointer] where delegate callbacks are not available.
+///
+/// Uses the modern `bytes(for:)` async API on iOS 15+/macOS 12+ for efficient
+/// streaming, with fallback on older versions.
+///
+/// Example:
+/// ```dart
+/// final session = URLSession.fromRawPointer(sessionPointer);
+/// final task = StreamingTask(
+///   session: session,
+///   request: URLRequest.fromUrl(Uri.parse('https://example.com/large-file')),
+/// );
+///
+/// task.start();
+///
+/// final response = await task.response;
+/// print('Status: ${(response as HTTPURLResponse).statusCode}');
+///
+/// await for (final chunk in task.data) {
+///   // Process chunk...
+/// }
+/// ```
+class StreamingTask {
+  final ncb.CUPHTTPStreamingTask _nsTask;
+  final Completer<URLResponse> _responseCompleter;
+  final StreamController<objc.NSData> _dataController;
+
+  /// Future that completes when response headers are received.
+  Future<URLResponse> get response => _responseCompleter.future;
+
+  /// Stream of data chunks as they arrive.
+  Stream<objc.NSData> get data => _dataController.stream;
+
+  /// Creates a streaming task for the given session and request.
+  ///
+  /// [chunkSize] controls buffering before data is delivered (default 64KB).
+  factory StreamingTask({
+    required URLSession session,
+    required URLRequest request,
+    int chunkSize = 65536,
+  }) {
+    final responseCompleter = Completer<URLResponse>();
+    final dataController = StreamController<objc.NSData>();
+
+    final nsTask = ncb.CUPHTTPStreamingTask.alloc().initWithSession(
+      session._nsObject,
+      request: request._nsObject,
+      onResponse: ncb.ObjCBlock_ffiVoid_NSURLResponse_NSError.listener((
+        response,
+        error,
+      ) {
+        if (error != null) {
+          responseCompleter.completeError(error);
+        } else if (response != null) {
+          responseCompleter.complete(
+            URLResponse._exactURLResponseType(response),
+          );
+        } else {
+          responseCompleter.completeError(
+            StateError(
+              'Response callback received null response and null error',
+            ),
+          );
+        }
+      }),
+      onData: ncb.ObjCBlock_ffiVoid_NSData.listener((data) {
+        if (data != null && !dataController.isClosed) {
+          dataController.add(data);
+        }
+      }),
+      onComplete: ncb.ObjCBlock_ffiVoid_NSError.listener((error) {
+        if (error != null && !responseCompleter.isCompleted) {
+          responseCompleter.completeError(error);
+        }
+        if (error != null) {
+          dataController.addError(error);
+        }
+        dataController.close();
+      }),
+      chunkSize: chunkSize,
+    );
+
+    return StreamingTask._(nsTask, responseCompleter, dataController);
+  }
+
+  StreamingTask._(
+    this._nsTask,
+    Completer<URLResponse> responseCompleter,
+    StreamController<objc.NSData> dataController,
+  ) : _responseCompleter = responseCompleter,
+      _dataController = dataController;
+
+  /// Starts the streaming request.
+  void start() {
+    _nsTask.start();
+  }
+
+  /// Cancels the in-flight request.
+  void cancel() {
+    _nsTask.cancel();
+  }
+}
