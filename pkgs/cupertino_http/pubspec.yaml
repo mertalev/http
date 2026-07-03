@@ -4,6 +4,7 @@ description: >-
   A macOS/iOS Flutter plugin that provides access to the Foundation URL
   Loading System.
 repository: https://github.com/dart-lang/http/tree/master/pkgs/cupertino_http
+publish_to: none
 
 environment:
   sdk: ^3.8.0
@@ -16,12 +17,20 @@ dependencies:
     sdk: flutter
   http: ^1.5.0
   http_profile: ^0.1.0
-  objective_c: ^9.1.0
+  objective_c:
+    git:
+      url: https://github.com/mertalev/native
+      ref: '677cb071eb04aec758477c8897dee56e4e3f6c07'
+      path: pkgs/objective_c/
   web_socket: '>=0.1.5 <2.0.0'
 
 dev_dependencies:
   dart_flutter_team_lints: ^3.0.0
-  ffigen: ^20.1.0
+  ffigen:
+    git:
+      url: https://github.com/mertalev/native
+      ref: '677cb071eb04aec758477c8897dee56e4e3f6c07'
+      path: pkgs/ffigen/
 
 flutter:
   plugin:
