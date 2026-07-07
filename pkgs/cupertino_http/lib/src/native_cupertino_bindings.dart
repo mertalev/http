@@ -674,6 +674,20 @@ extension type CUPHTTPStreamingTask._(objc.ObjCObject object$)
     return CUPHTTPStreamingTask.fromPointer($ret, retain: false, release: true);
   }
 
+  /// Returns a C function pointer of type `void (*)(void *object)`.
+  ///
+  /// The function cancels the task referenced by `object` — a retained (+1)
+  /// CUPHTTPStreamingTask, CUPHTTPWebSocketTask, or NSURLSessionTask — and
+  /// releases the reference. Intended for use as a Dart `NativeFinalizer`
+  /// callback, so that an in-flight task is cancelled when its Dart wrapper is
+  /// garbage collected or its isolate group shuts down (eg a Flutter hot
+  /// restart), instead of running until natural completion with nobody
+  /// listening. Safe to call from any thread; cancelling an already-completed
+  /// task is a no-op.
+  static ffi.Pointer<ffi.Void> taskReaper() {
+    return _objc_msgSend_6ex6p5(_class_CUPHTTPStreamingTask, _sel_taskReaper);
+  }
+
   /// Returns a new instance of CUPHTTPStreamingTask constructed with the default `new` method.
   CUPHTTPStreamingTask() : this.as(new$().object$);
 }
@@ -32498,6 +32512,21 @@ final _objc_msgSend_4sp4xj = objc.msgSendPointer
         int,
       )
     >();
+final _objc_msgSend_6ex6p5 = objc.msgSendPointer
+    .cast<
+      ffi.NativeFunction<
+        ffi.Pointer<ffi.Void> Function(
+          ffi.Pointer<objc.ObjCObjectImpl>,
+          ffi.Pointer<objc.ObjCSelector>,
+        )
+      >
+    >()
+    .asFunction<
+      ffi.Pointer<ffi.Void> Function(
+        ffi.Pointer<objc.ObjCObjectImpl>,
+        ffi.Pointer<objc.ObjCSelector>,
+      )
+    >();
 final _objc_msgSend_6p7ndb = objc.msgSendPointer
     .cast<
       ffi.NativeFunction<
@@ -33653,6 +33682,7 @@ late final _sel_supportsSecureCoding = objc.registerName(
 late final _sel_suspend = objc.registerName("suspend");
 late final _sel_taskDescription = objc.registerName("taskDescription");
 late final _sel_taskIdentifier = objc.registerName("taskIdentifier");
+late final _sel_taskReaper = objc.registerName("taskReaper");
 late final _sel_textEncodingName = objc.registerName("textEncodingName");
 late final _sel_timeoutInterval = objc.registerName("timeoutInterval");
 late final _sel_timeoutIntervalForRequest = objc.registerName(

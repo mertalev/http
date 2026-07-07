@@ -49,6 +49,18 @@ typedef void (^CUPHTTPCompletionBlock)(NSError * _Nullable error);
 /// Cancels the in-flight request.
 - (void)cancel;
 
+/// Returns a C function pointer of type `void (*)(void *object)`.
+///
+/// The function cancels the task referenced by `object` — a retained (+1)
+/// CUPHTTPStreamingTask, CUPHTTPWebSocketTask, or NSURLSessionTask — and
+/// releases the reference. Intended for use as a Dart `NativeFinalizer`
+/// callback, so that an in-flight task is cancelled when its Dart wrapper is
+/// garbage collected or its isolate group shuts down (eg a Flutter hot
+/// restart), instead of running until natural completion with nobody
+/// listening. Safe to call from any thread; cancelling an already-completed
+/// task is a no-op.
++ (void *)taskReaper;
+
 @end
 
 NS_ASSUME_NONNULL_END

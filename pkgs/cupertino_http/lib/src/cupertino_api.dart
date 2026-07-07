@@ -621,7 +621,8 @@ class URLSessionDownloadTask extends URLSessionTask {
 /// A task associated with a WebSocket connection.
 ///
 /// See [NSURLSessionWebSocketTask](https://developer.apple.com/documentation/foundation/nsurlsessionwebsockettask)
-class URLSessionWebSocketTask extends URLSessionTask {
+class URLSessionWebSocketTask extends URLSessionTask
+    implements ffi.Finalizable {
   final ncb.NSURLSessionWebSocketTask _urlSessionWebSocketTask;
 
   URLSessionWebSocketTask._(ncb.NSURLSessionWebSocketTask super.c)
@@ -1302,6 +1303,20 @@ class URLSession extends _ObjectHolder<ncb.NSURLSession> {
   }
 }
 
+/// Cancels and releases orphaned native tasks.
+///
+/// Attached to the Dart wrappers of shared-session tasks with a retained
+/// reference to the native task as the token. The callback runs when the
+/// wrapper is garbage collected or, at the latest, when its isolate group
+/// shuts down (eg a Flutter hot restart) — so an in-flight task whose owner
+/// isolate died is cancelled promptly instead of running until natural
+/// completion with all of its events being dropped. Cancelling an
+/// already-completed task is a no-op, so no detach is needed; the finalizer
+/// always runs exactly once and releases the token's reference.
+final _taskReaper = ffi.NativeFinalizer(
+  ncb.CUPHTTPStreamingTask.taskReaper().cast(),
+);
+
 /// A streaming HTTP task for externally-managed sessions.
 ///
 /// Provides chunk-based response delivery that works with sessions created
@@ -1324,7 +1339,7 @@ class URLSession extends _ObjectHolder<ncb.NSURLSession> {
 ///   // Process chunk...
 /// }
 /// ```
-class StreamingTask {
+class StreamingTask implements ffi.Finalizable {
   final ncb.CUPHTTPStreamingTask _nsTask;
   final Completer<URLResponse> _responseCompleter;
   final StreamController<Uint8List> _dataController;
@@ -1393,7 +1408,9 @@ class StreamingTask {
       }),
       maxRedirects: maxRedirects,
     );
-    return task = StreamingTask._(nsTask, completer, controller);
+    task = StreamingTask._(nsTask, completer, controller);
+    _taskReaper.attach(task, nsTask.ref.retainAndReturnPointer().cast());
+    return task;
   }
 
   StreamingTask._(this._nsTask, this._responseCompleter, this._dataController);
@@ -1475,6 +1492,15 @@ class WebSocketTask {
       onOpen: ncb.ObjCBlock_ffiVoid_NSString.listener((protocol) {
         final nsWebSocketTask = nsTask.webSocketTask!;
         final task = URLSessionWebSocketTask._(nsWebSocketTask);
+        // The wrapper is retained by the CupertinoWebSocket for the socket's
+        // lifetime, so the reaper fires when the socket handle is dropped or
+        // its isolate group shuts down. (The reaper is deliberately NOT
+        // attached to the WebSocketTask helper wrapper: nothing Dart-side
+        // retains it while the socket is live.)
+        _taskReaper.attach(
+          task,
+          nsWebSocketTask.ref.retainAndReturnPointer().cast(),
+        );
         openCompleter.complete((task, protocol?.toDartString()));
       }),
       onClose: ncb.ObjCBlock_ffiVoid_NSInteger_NSData.listener((

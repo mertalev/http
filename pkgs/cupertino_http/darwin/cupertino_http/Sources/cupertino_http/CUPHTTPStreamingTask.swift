@@ -100,6 +100,30 @@ public class CUPHTTPStreamingTask: NSObject {
     public func cancel() {
         dataTask?.cancel()
     }
+
+    /// See CUPHTTPStreamingTask.h. Exposed as a bound class method (rather
+    /// than a bare @_cdecl symbol) so the function pointer travels through the
+    /// generated bindings and cannot be dead-stripped.
+    @objc
+    public static func taskReaper() -> UnsafeMutableRawPointer {
+        unsafeBitCast(taskReaperImpl, to: UnsafeMutableRawPointer.self)
+    }
+}
+
+/// Cancels the retained task object passed as a NativeFinalizer token and
+/// releases it. May run on any thread (Dart GC or isolate-group shutdown).
+private let taskReaperImpl: @convention(c) (UnsafeMutableRawPointer) -> Void = { ptr in
+    let object = Unmanaged<NSObject>.fromOpaque(ptr).takeRetainedValue()
+    switch object {
+    case let task as CUPHTTPStreamingTask:
+        task.cancel()
+    case let task as CUPHTTPWebSocketTask:
+        task.cancel()
+    case let task as URLSessionTask:
+        task.cancel()
+    default:
+        break
+    }
 }
 
 /// Per-task data delegate that handles only streaming delivery.
