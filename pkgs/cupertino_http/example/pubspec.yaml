@@ -34,7 +34,7 @@ dev_dependencies:
   objective_c:
     git:
       url: https://github.com/mertalev/native
-      ref: '677cb071eb04aec758477c8897dee56e4e3f6c07'
+      ref: '2915556701f4734a784222f290a82adb1b101682'
       path: pkgs/objective_c/
   test: ^1.21.1
   web_socket: '^1.0.0'
